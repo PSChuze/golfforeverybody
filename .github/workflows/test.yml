@@ -1,0 +1,29 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Tests
+        run: python -m unittest discover -s tests -t .
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: docker build -t golfforeverybody:ci .
+      - name: Compose file
+        run: |
+          cp .env.example .env
+          printf 'MINGOL_PUBLIC_IP=192.0.2.10\nMINGOL_ADMIN_TOKEN=ci\n' >> .env
+          docker network create openlobby
+          docker compose config --quiet

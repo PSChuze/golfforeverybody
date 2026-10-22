@@ -1,0 +1,11 @@
+.env
+*.pyc
+__pycache__/
+state/
+backups/
+logs/
+build/
+dist/
+.setup-files
+.setup-version
+mingol/site/seed/

@@ -1,0 +1,50 @@
+# Everybody's Golf Online server: docker compose up -d
+#
+# Settings come from .env (run python setup.py, or copy .env.example). The admin port for an
+# OpenLobby panel and the website for the shared web server on port 80 are reached over the
+# shared `openlobby` network:
+#   docker network inspect openlobby >/dev/null 2>&1 || docker network create openlobby
+#
+# Host folders (MINGOL_STATE, default ./state):
+#   data/   accounts, the website's posts and Japan Tour rounds, login news, board/live.json
+#   logs/   every frame both ways, one file per server
+name: mingol
+
+services:
+  game:
+    build: .
+    image: golfforeverybody:local
+    restart: unless-stopped
+    stop_grace_period: 10s
+    env_file: .env
+    environment:
+      MINGOL_PUBLIC_IP: ${MINGOL_PUBLIC_IP:?set MINGOL_PUBLIC_IP in .env}
+      MINGOL_ADMIN_PORT: "12190"
+      MINGOL_ADMIN_BIND: 0.0.0.0
+      MINGOL_ADMIN_TOKEN: ${MINGOL_ADMIN_TOKEN:?set MINGOL_ADMIN_TOKEN in .env}
+      MINGOL_ADMIN_CONTAINERS: mingol-game-1
+    volumes:
+      - ${MINGOL_STATE:-./state}/data:/data
+      - ${MINGOL_STATE:-./state}/logs:/logs
+    ports:
+      # The client must reach all of these at MINGOL_PUBLIC_IP. regi is fixed at 12102 in the
+      # game; gate and play are told to the client on the same numbers inside and out. The
+      # website's port 80 names (www, bbs, patch) come through OpenLobby's shared web server,
+      # which forwards them to http://mingol:12105 over the openlobby network.
+      - "12102-12105:12102-12105"
+    labels:
+      org.openlobby.role: game
+      org.openlobby.game.key: mingol
+      org.openlobby.game.title: Everybody's Golf Online
+      org.openlobby.admin.url: http://mingol:12190
+    networks:
+      default: {}
+      openlobby:
+        aliases: [mingol]
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+networks:
+  openlobby:
+    external: true
