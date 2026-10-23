@@ -84,22 +84,43 @@ class UpdateObject(unittest.TestCase):
         got = self.check(OLD, FakeGitHub(down=True))
         self.assertEqual(got["update"], "unknown")
         self.assertEqual(got["why"], "GitHub did not answer (OSError)")
-        self.assertIsNone(got["behind"])
-        self.assertEqual(got["changes"], [])
-        self.assertEqual(got["running"]["commit"], OLD)
+        self.assertUnknownShape(got)
+        self.assertEqual(got["latest"], {"commit": None, "date": None})
+        self.assertEqual(got["running"], {"commit": OLD, "built_at": "2025-02-01T00:00:00Z"})
+
+    def assertUnknownShape(self, got):
+        """The panel takes no null objects: an unknown answer still has every field's shape."""
+        self.assertEqual(got["update"], "unknown")
+        self.assertTrue(got["why"])
+        self.assertEqual((got["behind"], got["changes"]), (0, []))
+        self.assertIsInstance(got["latest"], dict)
+        self.assertEqual(set(got["latest"]), {"commit", "date"})
+        self.assertIsInstance(got["running"], dict)
+        self.assertEqual(set(got["running"]), {"commit", "built_at"})
 
     def test_unknown_reasons(self):
         gh = FakeGitHub()
         got = self.check("", gh, built="")
-        self.assertEqual(got["update"], "unknown")
+        self.assertUnknownShape(got)
         self.assertIn("does not know its commit", got["why"])
         self.assertEqual(got["latest"]["commit"], NEW)            # the release is still shown
-        self.assertEqual(got["running"], {"commit": "unknown", "built_at": "unknown"})
-        self.assertIn("not in", self.check("e" * 40, gh)["why"])
-        self.assertIn("no release", self.check(OLD, FakeGitHub(routes={}))["why"])
+        self.assertEqual(got["running"], {"commit": None, "built_at": None})
+        got = self.check("e" * 40, gh)
+        self.assertUnknownShape(got)
+        self.assertIn("not in", got["why"])
+        self.assertEqual(got["latest"], {"commit": None, "date": None})
+        self.assertEqual(got["running"]["commit"], "e" * 40)
+        got = self.check(OLD, FakeGitHub(routes={}))
+        self.assertUnknownShape(got)
+        self.assertIn("no release", got["why"])
         limited = FakeGitHub(routes={"/repos/%s/releases/latest" % REPO: (403, {})})
-        self.assertIn("too many requests", self.check(OLD, limited)["why"])
-        self.assertIn("owner/name", updates.UpdateCheck("nope", OLD, fetch=FakeGitHub()).get(wait=5)["why"])
+        got = self.check(OLD, limited)
+        self.assertUnknownShape(got)
+        self.assertIn("too many requests", got["why"])
+        got = updates.UpdateCheck("nope", OLD, fetch=FakeGitHub()).get(wait=5)
+        self.assertUnknownShape(got)
+        self.assertIn("owner/name", got["why"])
+        self.assertEqual(got["latest"], {"commit": None, "date": None})
 
     def test_cached(self):
         gh = FakeGitHub()
@@ -124,8 +145,9 @@ class UpdateObject(unittest.TestCase):
             raise OSError("late")
         try:
             got = updates.UpdateCheck(REPO, OLD, fetch=slow).get(wait=0.05)
-            self.assertEqual(got["update"], "unknown")
+            self.assertUnknownShape(got)
             self.assertIn("still asking", got["why"])
+            self.assertEqual(got["latest"], {"commit": None, "date": None})
         finally:
             gate.set()
 

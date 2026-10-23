@@ -36,6 +36,9 @@ From a clone of this repository, `python setup.py` does the same (Python 3.8 or 
 - Run Golf Server Setup and choose Update.
 - Or, in the server folder: `python setup.py --update --yes`
 
+Installs of v1.0.0 must run Golf Server Setup and choose Update once; after that the panel's
+Update button works.
+
 An update downloads the newest release, builds it while the old version keeps running, then
 swaps the files and restarts only what was running. `.env`, `state/`, `backups/` and the logs
 are left as they are. The panel shows when a newer release is out; `MINGOL_UPDATE_REPO` in

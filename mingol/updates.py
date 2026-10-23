@@ -152,7 +152,9 @@ def compare(repo, running, release, fetch=fetch):
 
 
 def unknown(why, latest=None):
-    return {"latest": latest, "behind": None, "changes": [], "update": "unknown", "why": why, "how": HOW}
+    """No answer: every field still has its shape (the panel takes no null objects)."""
+    return {"latest": latest or {"commit": None, "date": None}, "behind": 0, "changes": [],
+            "update": "unknown", "why": why, "how": HOW}
 
 
 class UpdateCheck:
@@ -183,7 +185,10 @@ class UpdateCheck:
                 answer = self.answer
         if answer is None:
             answer = unknown("still asking GitHub, try again in a moment")
-        running = {"commit": self.revision or "unknown", "built_at": self.built_at or "unknown"}
+        if answer["update"] == "unknown":
+            running = {"commit": self.revision or None, "built_at": self.built_at or None}
+        else:
+            running = {"commit": self.revision or "unknown", "built_at": self.built_at or "unknown"}
         return dict(answer, running=running)
 
     def _refresh(self):

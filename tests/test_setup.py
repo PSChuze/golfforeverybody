@@ -533,5 +533,73 @@ class UpdaterPairing(unittest.TestCase):
         self.assertEqual(setup.read_choices()["updater_folder"], self.root)
 
 
+class SeveralPanels(unittest.TestCase):
+    """More than one container labelled org.openlobby.role=panel: ask, or pair with none."""
+    A, B = "http://127.0.0.1:8090", "http://127.0.0.1:8091"
+
+    def dock(self):
+        return FakeDocker(running={"org.openlobby.role=panel": ["openlobby-web-1", "lab-panel-1"]},
+                          labels={("openlobby-web-1", "org.openlobby.panel.url"): self.A + "/",
+                                  ("lab-panel-1", "org.openlobby.panel.url"): self.B})
+
+    def test_listed(self):
+        self.assertEqual(openlobby.find_panels(self.dock()),
+                         [("openlobby-web-1", self.A), ("lab-panel-1", self.B)])
+
+    def test_never_guessed(self):
+        told = []
+        self.assertIsNone(openlobby.find_panel(self.dock(), tell=told.append))
+        self.assertEqual(len(told), 1)
+        for text in ("openlobby-web-1 at " + self.A, "lab-panel-1 at " + self.B, "run Setup and choose the panel"):
+            self.assertIn(text, told[0])
+        self.assertIsNone(openlobby.find_panel(self.dock()))          # nobody to tell: still none
+
+    def test_chosen(self):
+        seen = []
+
+        def choose(panels):
+            seen.append(panels)
+            return 1
+        self.assertEqual(openlobby.find_panel(self.dock(), choose=choose), self.B)
+        self.assertEqual(seen, [[("openlobby-web-1", self.A), ("lab-panel-1", self.B)]])
+        self.assertIsNone(openlobby.find_panel(self.dock(), choose=lambda panels: None))
+
+    def test_one_panel_unchanged(self):
+        dock = FakeDocker(running={"org.openlobby.role=panel": ["openlobby-web-1"]},
+                          labels={("openlobby-web-1", "org.openlobby.panel.url"): self.A})
+        asked = []
+        self.assertEqual(openlobby.find_panel(dock, choose=asked.append, tell=asked.append), self.A)
+        self.assertEqual(asked, [])
+
+    def test_setup_asks_at_a_terminal(self):
+        out = io.StringIO()
+        with mock.patch.object(setup, "docker_run", self.dock()), mock.patch.object(setup, "interactive", lambda: True),                 mock.patch("builtins.input", lambda prompt="": "2"), mock.patch("sys.stdout", out):
+            self.assertEqual(setup.find_panel(), self.B)
+        self.assertIn("1. openlobby-web-1 (%s)" % self.A, out.getvalue())
+        self.assertIn("2. lab-panel-1 (%s)" % self.B, out.getvalue())
+
+    def test_setup_without_a_terminal(self):
+        out = io.StringIO()
+
+        def no_input(prompt=""):
+            raise AssertionError("asked without a terminal")
+        with mock.patch.object(setup, "docker_run", self.dock()), mock.patch.object(setup, "interactive", lambda: False),                 mock.patch("builtins.input", no_input), mock.patch("sys.stdout", out):
+            self.assertIsNone(setup.find_panel())
+        lines = [line for line in out.getvalue().splitlines() if line.strip()]
+        self.assertEqual(len(lines), 1)
+        self.assertIn("run Golf Server Setup and choose the panel", lines[0])
+        self.assertIn("lab-panel-1 at " + self.B, lines[0])
+
+    def test_update_yes_sends_nothing(self):
+        root = tempfile.mkdtemp()
+        write(root, ".env", "MINGOL_ADMIN_TOKEN=tok\nOPENLOBBY_PAIRING=secret-1\n")
+        setup.use_root(root)
+        self.addCleanup(setup.use_root, os.path.dirname(os.path.abspath(setup.__file__)))
+        sent = []
+        with mock.patch.object(setup, "docker_run", self.dock()), mock.patch.object(setup, "interactive", lambda: False),                 mock.patch.object(openlobby, "_post", lambda url, doc, opener: sent.append(url) or (200, {})),                 mock.patch("sys.stdout", io.StringIO()):
+            setup.resend_updater()
+        self.assertEqual(sent, [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -654,6 +654,27 @@ def udp_port_taken(port):
     return False
 
 
+def interactive():
+    """True when someone at a terminal can answer."""
+    try:
+        return sys.stdin is not None and sys.stdin.isatty()
+    except (OSError, ValueError):
+        return False
+
+
+def choose_panel(panels):
+    """Which of several panels to use -> its 0-based index."""
+    heading("More than one OpenLobby admin panel")
+    return ask_choice("Which one should %s use?" % TITLE,
+                      ["%s (%s)" % (name, url) for name, url in panels]) - 1
+
+
+def find_panel():
+    """The panel to pair with: asked for when several run, none when nobody can answer."""
+    return openlobby.find_panel(docker_run, choose_panel if interactive() else None, say,
+                                program="Golf Server Setup")
+
+
 def pair_with_panel(env, panel):
     """Pair with the panel by its one-time code; keeps the secret in .env."""
     say("In the panel, open Settings, Modules, \"Pair with a setup program\". It shows a code.")
@@ -693,7 +714,7 @@ def resend_updater():
     env = read_env()
     if not env.get("OPENLOBBY_PAIRING") or read_choices().get("updater_folder") == ROOT:
         return
-    panel = openlobby.find_panel(docker_run)
+    panel = find_panel()
     if not panel:
         return
     ok, _why, answer = openlobby.pair_update(panel, KEY, env["OPENLOBBY_PAIRING"],
@@ -832,7 +853,7 @@ def first_run(dry_run=False):
     say("then setup does the rest in a few minutes.")
     env = read_env(ENV_EXAMPLE)
     choices = read_choices()
-    panel = None if dry_run else openlobby.find_panel(docker_run)
+    panel = None if dry_run else find_panel()
     total = 3 if panel else 2
     who = ask_who(total=total)
     address = ask_address(who)
@@ -957,7 +978,7 @@ def change_name(env, choices):
 
 
 def change_panel(env, choices):
-    panel = openlobby.find_panel(docker_run)
+    panel = find_panel()
     if not panel:
         say("No OpenLobby admin panel runs on this computer.")
         say("Without pairing, a panel can add this game with POL_ADMIN_GAME_MINGOL_URL=%s" % ADMIN_URL)
@@ -972,7 +993,7 @@ def new_token(env, choices):
         return False
     token = secrets.token_hex(24)
     write_env({"MINGOL_ADMIN_TOKEN": token})
-    panel = openlobby.find_panel(docker_run)
+    panel = find_panel()
     if env.get("OPENLOBBY_PAIRING") and panel:
         ok, why, answer = openlobby.pair_update(panel, KEY, env["OPENLOBBY_PAIRING"], token, updater=updater())
         say("The panel has the new token." if ok else "The panel was not told (%s). Pair again." % why)

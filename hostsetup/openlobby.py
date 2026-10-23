@@ -275,12 +275,29 @@ def start_feega(folder, address, source, run=run_docker, fetch=urllib.request.ur
 
 # --- an OpenLobby admin panel --------------------------------------------------------------------
 
-def find_panel(run=run_docker):
-    """The address of a running OpenLobby panel, or None."""
+def find_panels(run=run_docker):
+    """The running OpenLobby panels -> [(container name, address)]."""
+    panels = []
     for name in running("org.openlobby.role=panel", run):
         url = label_of(name, "org.openlobby.panel.url", run)
         if url:
-            return url.rstrip("/")
+            panels.append((name, url.rstrip("/")))
+    return panels
+
+
+def find_panel(run=run_docker, choose=None, tell=None, program="Setup"):
+    """The address of the running OpenLobby panel, or None. With more than one, `choose` (given
+    [(name, address)], -> the 0-based pick or None) picks it; without `choose` none is guessed and
+    `tell` gets one sentence naming them."""
+    panels = find_panels(run)
+    if len(panels) < 2:
+        return panels[0][1] if panels else None
+    if choose:
+        pick = choose(panels)
+        return panels[pick][1] if pick is not None else None
+    if tell:
+        tell("More than one OpenLobby admin panel runs on this computer (%s), so none was used: "
+             "run %s and choose the panel." % (", ".join("%s at %s" % p for p in panels), program))
     return None
 
 

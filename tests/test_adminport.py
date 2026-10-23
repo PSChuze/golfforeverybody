@@ -497,6 +497,7 @@ class UpdateNotice(unittest.TestCase):
         self.assertEqual(doc["update"]["running"]["commit"], OLD)
         st, doc = self.status(updates.UpdateCheck(REPO, OLD, fetch=FakeGitHub(down=True)))
         self.assertEqual((st, doc["up"], doc["update"]["update"]), (200, True, "unknown"))
+        self.assertEqual((doc["update"]["latest"], doc["update"]["behind"]), ({"commit": None, "date": None}, 0))
         self.assertNotIn("update", self.status(None)[1])
 
 
