@@ -9,3 +9,4 @@ dist/
 .setup-files
 .setup-version
 mingol/site/seed/
+server-revision.json

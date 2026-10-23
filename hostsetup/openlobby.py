@@ -299,24 +299,32 @@ def _post(url, doc, opener):
         return 0, {"error": e.__class__.__name__}
 
 
-def pair(panel_url, code, key, title, url, token, opener=urllib.request.urlopen):
-    """Pair with the panel by its one-time code -> (True, pairing secret) or (False, why)."""
-    status, doc = _post(panel_url + "/api/pair", {"code": code.strip(), "key": key, "title": title,
-                                                  "url": url, "token": token}, opener)
-    if status == 200 and doc.get("ok") and doc.get("pairing"):
-        return True, doc["pairing"]
+def pair(panel_url, code, key, title, url, token, updater=None, opener=urllib.request.urlopen):
+    """Pair with the panel by its one-time code -> (True, pairing secret, the panel's word on the
+    updater) or (False, why, None). `updater` is {"folder", "command", "timeout_minutes"}: how the
+    panel's deployer runs this game's update; the panel answers "requested" until its owner
+    approves it."""
+    doc = {"code": code.strip(), "key": key, "title": title, "url": url, "token": token}
+    if updater:
+        doc["updater"] = updater
+    status, out = _post(panel_url + "/api/pair", doc, opener)
+    if status == 200 and out.get("ok") and out.get("pairing"):
+        return True, out["pairing"], out.get("updater")
     why = {403: "The code is wrong, used or older than 10 minutes.", 429: "Too many tries. Wait a minute.",
-           0: "The panel did not answer."}.get(status, doc.get("error") or "The panel said no (%d)." % status)
-    return False, why
+           0: "The panel did not answer."}.get(status, out.get("error") or "The panel said no (%d)." % status)
+    return False, why, None
 
 
-def pair_update(panel_url, key, pairing, token, url=None, opener=urllib.request.urlopen):
-    """Tell the panel the new admin token -> (ok, why)."""
+def pair_update(panel_url, key, pairing, token, url=None, updater=None, opener=urllib.request.urlopen):
+    """Tell the panel the new admin token (and the updater, when given) -> (ok, why, the panel's
+    word on the updater)."""
     doc = {"key": key, "pairing": pairing, "token": token}
     if url:
         doc["url"] = url
+    if updater:
+        doc["updater"] = updater
     status, out = _post(panel_url + "/api/pair/update", doc, opener)
     if status == 200 and out.get("ok"):
-        return True, ""
+        return True, "", out.get("updater")
     return False, {403: "The panel no longer knows this pairing.", 404: "The panel has no such game.",
-                   0: "The panel did not answer."}.get(status, out.get("error") or "HTTP %d" % status)
+                   0: "The panel did not answer."}.get(status, out.get("error") or "HTTP %d" % status), None

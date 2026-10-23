@@ -12,7 +12,9 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 COPY mingol /app/mingol
 COPY tests /app/tests
-COPY run.py /app/run.py
+# server-revision.json (the commit this was built from, for the panel's update notice) is
+# written by the setup program and its packaging; the pattern lets a build go on without it.
+COPY run.py server-revision.jso[n] /app/
 
 # The tests gate the image: a failing suite fails the build, and the old image keeps running.
 # test_setup.py checks the setup program, which is not in the image.

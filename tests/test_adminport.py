@@ -17,7 +17,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from mingol import adminport, tours
+from mingol import adminport, tours, updates
 from mingol.accounts import Store
 from mingol.feega import Feega, FeegaError
 from mingol.play import Play
@@ -468,6 +468,36 @@ class FeegaLookupTest(unittest.TestCase):
         self.assertEqual((mod["accounts"], mod["players"]), ("feega", True))
         self.assertEqual(st3, 200)
         self.assertEqual(picks["players"], [{"id": "Frank", "label": "Frank", "detail": "offline", "online": False}])
+
+
+class UpdateNotice(unittest.TestCase):
+    """status.json carries the update object when the port has a check (mingol/updates.py)."""
+
+    def status(self, check):
+        store = Store(os.path.join(tempfile.mkdtemp(), "accounts.json"))
+        play = Play("127.0.0.1", store)
+        gate = Gate("127.0.0.1", 12104, store)
+
+        async def flow():
+            ap = adminport.build(asyncio.get_running_loop(), play, gate, None, token=TOKEN, bind="127.0.0.1",
+                                 port=0, containers=[], update_check=check)
+            base = "http://%s:%d" % ap.start()
+            try:
+                return await asyncio.to_thread(http, base, "/openlobby/status.json")
+            finally:
+                ap.stop()
+        return asyncio.run(flow())
+
+    def test_update_object(self):
+        from tests.test_updates import NEW, OLD, REPO, FakeGitHub
+        st, doc = self.status(updates.UpdateCheck(REPO, OLD, "2025-02-01T00:00:00Z", fetch=FakeGitHub()))
+        self.assertEqual((st, doc["up"]), (200, True))
+        self.assertEqual(doc["update"]["update"], "available")
+        self.assertEqual(doc["update"]["latest"]["commit"], NEW)
+        self.assertEqual(doc["update"]["running"]["commit"], OLD)
+        st, doc = self.status(updates.UpdateCheck(REPO, OLD, fetch=FakeGitHub(down=True)))
+        self.assertEqual((st, doc["up"], doc["update"]["update"]), (200, True, "unknown"))
+        self.assertNotIn("update", self.status(None)[1])
 
 
 if __name__ == "__main__":

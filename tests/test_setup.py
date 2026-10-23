@@ -5,6 +5,9 @@ import asyncio
 import io
 import json
 import os
+import shutil
+import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -13,6 +16,7 @@ from unittest import mock
 
 import setup
 from hostsetup import openlobby
+from hostsetup import progress as proglib
 
 
 class FakeDocker:
@@ -225,13 +229,13 @@ class OpenLobby(unittest.TestCase):
         def opener(req, timeout=0):
             sent.append((req.full_url, json.loads(req.data)))
             return Answer(json.dumps({"ok": True, "title": "x", "pairing": "secret-1"}).encode())
-        ok, got = openlobby.pair("http://127.0.0.1:8090", " ABCD2345 ", "mingol", "Everybody's Golf Online",
-                                 "http://mingol:12190", "tok", opener)
-        self.assertEqual((ok, got), (True, "secret-1"))
+        ok, got, answer = openlobby.pair("http://127.0.0.1:8090", " ABCD2345 ", "mingol", "Everybody's Golf Online",
+                                         "http://mingol:12190", "tok", opener=opener)
+        self.assertEqual((ok, got, answer), (True, "secret-1", None))
         self.assertEqual(sent[0], ("http://127.0.0.1:8090/api/pair",
                                    {"code": "ABCD2345", "key": "mingol", "title": "Everybody's Golf Online",
                                     "url": "http://mingol:12190", "token": "tok"}))
-        ok, _ = openlobby.pair_update("http://127.0.0.1:8090", "mingol", "secret-1", "tok2", opener=opener)
+        ok, _, _ = openlobby.pair_update("http://127.0.0.1:8090", "mingol", "secret-1", "tok2", opener=opener)
         self.assertTrue(ok)
         self.assertEqual(sent[1], ("http://127.0.0.1:8090/api/pair/update",
                                    {"key": "mingol", "pairing": "secret-1", "token": "tok2"}))
@@ -240,8 +244,8 @@ class OpenLobby(unittest.TestCase):
 
         def refused(req, timeout=0):
             raise urllib.error.HTTPError(req.full_url, 403, "no", {}, io.BytesIO(b'{"error": "bad code"}'))
-        self.assertEqual(openlobby.pair("http://x", "c", "mingol", "t", "u", "tok", refused),
-                         (False, "The code is wrong, used or older than 10 minutes."))
+        self.assertEqual(openlobby.pair("http://x", "c", "mingol", "t", "u", "tok", opener=refused),
+                         (False, "The code is wrong, used or older than 10 minutes.", None))
 
 
 class FirstRun(unittest.TestCase):
@@ -262,6 +266,271 @@ class FirstRun(unittest.TestCase):
         self.assertIn("MINGOL_PUBLIC_IP=203.0.113.7", text)
         self.assertIn("MINGOL_NEWS=Welcome to Test Server!", text)
         self.assertEqual(os.listdir(d), [])
+
+
+OLD = "a" * 40
+NEW = "b" * 40
+
+
+class FakeHost:
+    """setup.py's way out to Docker, faked: docker compose answers from a table and every
+    command is recorded."""
+
+    def __init__(self, running=("game",), build_fails=False, ps_fails=False):
+        self.running = list(running)
+        self.build_fails = build_fails
+        self.ps_fails = ps_fails
+        self.calls = []                  # (argv, cwd)
+        self.seen_at_build = None        # (the build folder's code, the server folder's code, .env there?)
+
+    def run(self, cmd, check=True, capture=False, **kw):
+        self.calls.append((list(cmd), None))
+        if cmd[:3] == ["docker", "compose", "ps"]:
+            return subprocess.CompletedProcess(cmd, 1 if self.ps_fails else 0,
+                                               stdout="\n".join(self.running) + "\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    def run_logged(self, cmd, log, on_line=None, progress=None, cwd=None, env=None):
+        self.calls.append((list(cmd), cwd))
+        if cmd[:3] == ["docker", "compose", "build"]:
+            with open(os.path.join(cwd, "mingol", "code.py"), encoding="utf-8") as f:
+                staged = f.read()
+            with open(os.path.join(setup.ROOT, "mingol", "code.py"), encoding="utf-8") as f:
+                live = f.read()
+            self.seen_at_build = (staged, live, os.path.exists(os.path.join(cwd, ".env")))
+            if self.build_fails:
+                return 1, ["ERROR: failed to solve: process did not complete successfully"]
+        return 0, []
+
+    def docker(self):
+        return [c for c, _ in self.calls if c[0] == "docker"]
+
+
+def write(d, rel, text):
+    os.makedirs(os.path.dirname(os.path.join(d, rel)), exist_ok=True)
+    with open(os.path.join(d, rel), "w", encoding="utf-8") as f:
+        f.write(text)
+
+
+def make_server(d):
+    """An installed server folder at v1.0.0 (commit OLD) with the host's own files."""
+    files = {"compose.yml": "name: mingol\n", "Dockerfile": "FROM python\n", "setup.py": "# old\n",
+             "run.py": "", "mingol/code.py": "old", "mingol/gone.py": "removed by the update"}
+    for rel, text in files.items():
+        write(d, rel, text)
+    write(d, ".setup-files", "\n".join(sorted(files)) + "\nserver-revision.json\n")
+    write(d, ".setup-version", "v1.0.0\n")
+    setup.updates.write_revision(d, OLD, "2025-01-01T00:00:00Z", tag="v1.0.0")
+    write(d, ".env", "MINGOL_PUBLIC_IP=192.0.2.10\nMINGOL_ADMIN_TOKEN=t\n")
+    write(d, "state/data/accounts.json", "{}")
+    write(d, "backups/golf-1.zip", "zip")
+    write(d, "logs/play.jsonl", "x")
+
+
+def make_release(path):
+    """GitHub's source zip of a release: everything in one top folder."""
+    with zipfile.ZipFile(path, "w") as z:
+        for rel, text in (("compose.yml", "name: mingol\n"), ("Dockerfile", "FROM python\n"),
+                          ("setup.py", "# new\n"), ("run.py", ""), ("mingol/code.py", "new"),
+                          (".env", "MINGOL_PUBLIC_IP=\n"), ("state/data/accounts.json", "[]")):
+            z.writestr("golfforeverybody-1.1.0/" + rel, text)
+
+
+class Update(unittest.TestCase):
+    """setup.py --update --yes: no question, no stdin, the old version kept until the new one builds."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        make_server(self.root)
+        self.zip = os.path.join(tempfile.mkdtemp(), "release.zip")
+        make_release(self.zip)
+        self.release = {"tag": "v1.1.0", "commit": NEW, "date": "2025-03-02T09:00:00Z",
+                        "zip": "https://example.invalid/v1.1.0.zip"}
+        self.addCleanup(setup.use_root, os.path.dirname(os.path.abspath(setup.__file__)))
+
+    def update(self, host, release=None, argv=None):
+        """Run the update in-process with stdin closed -> (exit code, printed lines)."""
+        out = io.StringIO()
+        stdin = io.StringIO("")
+        stdin.close()
+        temps = []
+        real_mkdtemp = tempfile.mkdtemp
+
+        def mkdtemp(*a, **k):
+            temps.append(real_mkdtemp(*a, **k))
+            return temps[-1]
+
+        def latest():
+            if isinstance(release, Exception):
+                raise release
+            return release or self.release
+
+        def no_questions(prompt=""):
+            raise AssertionError("asked: %s" % prompt)
+
+        cwd = os.getcwd()
+        with mock.patch.object(setup, "docker_state", lambda: "ok"), \
+                mock.patch.object(setup, "run", host.run), \
+                mock.patch.object(setup.proglib, "run_logged", host.run_logged), \
+                mock.patch.object(setup, "latest_release", latest), \
+                mock.patch.object(setup, "download", lambda url, path, timeout=60: shutil.copy(self.zip, path)), \
+                mock.patch.object(setup, "wait_ready", lambda env, timeout=120, hosts=(): "127.0.0.1"), \
+                mock.patch.object(setup, "patch_answers", lambda *a, **k: True), \
+                mock.patch.object(setup.tempfile, "mkdtemp", mkdtemp), \
+                mock.patch("builtins.input", no_questions), \
+                mock.patch("sys.stdin", stdin), mock.patch("sys.stdout", out):
+            try:
+                code = setup.main(argv or ["--update", "--yes", "--folder", self.root])
+            finally:
+                os.chdir(cwd)
+        self.temps = temps
+        return code, out.getvalue().strip().splitlines()
+
+    def read(self, rel):
+        with open(os.path.join(self.root, rel), encoding="utf-8") as f:
+            return f.read()
+
+    def test_already_current(self):
+        setup.updates.write_revision(self.root, NEW, tag="v1.1.0")
+        host = FakeHost()
+        code, lines = self.update(host)
+        self.assertEqual((code, lines[-1]), (0, "Already up to date (v1.1.0)."))
+        self.assertEqual(host.docker(), [["docker", "compose", "ps", "--status", "running", "--services"]])
+        self.assertEqual(self.read("mingol/code.py"), "old")
+
+    def test_available(self):
+        host = FakeHost(running=["game"])
+        code, lines = self.update(host)
+        self.assertEqual(code, 0, lines)
+        self.assertEqual(lines[-1], "Updated to v1.1.0 (bbbbbbb); restarted game.")
+        # built from the new files beside the old ones, with the host's settings
+        self.assertEqual(host.seen_at_build, ("new", "old", True))
+        build = [cwd for c, cwd in host.calls if c[:3] == ["docker", "compose", "build"]]
+        self.assertNotEqual(os.path.normpath(build[0]), os.path.normpath(self.root))
+        self.assertIn(["docker", "compose", "up", "-d", "--no-deps", "--no-build", "game"], host.docker())
+        # the code is new, the host's own files are as they were
+        self.assertEqual((self.read("mingol/code.py"), self.read("setup.py")), ("new", "# new\n"))
+        self.assertFalse(os.path.exists(os.path.join(self.root, "mingol", "gone.py")))
+        self.assertEqual(self.read(".env"), "MINGOL_PUBLIC_IP=192.0.2.10\nMINGOL_ADMIN_TOKEN=t\n")
+        self.assertEqual(self.read("state/data/accounts.json"), "{}")
+        self.assertEqual((self.read("backups/golf-1.zip"), self.read("logs/play.jsonl")), ("zip", "x"))
+        self.assertEqual(setup.updates.read_revision(self.root)[0], NEW)
+        self.assertEqual(self.read(".setup-version").strip(), "v1.1.0")
+        self.assertFalse(any(os.path.exists(t) for t in self.temps))          # no leftovers
+        # only this compose project: Feega and the shared DNS and web server are left alone
+        self.assertTrue(all(c[:2] == ["docker", "compose"] and "-f" not in c and "-p" not in c
+                            for c in host.docker()))
+        # safe to run again: now it is current
+        code, lines = self.update(FakeHost())
+        self.assertEqual((code, lines[-1]), (0, "Already up to date (v1.1.0)."))
+
+    def test_stopped_services_stay_stopped(self):
+        host = FakeHost(running=[])
+        code, lines = self.update(host)
+        self.assertEqual((code, lines[-1]), (0, "Updated to v1.1.0 (bbbbbbb); the server stays stopped."))
+        self.assertFalse(any("up" in c for c in host.docker()))
+        self.assertEqual(self.read("mingol/code.py"), "new")
+
+    def test_build_failure_keeps_the_old_code(self):
+        host = FakeHost(build_fails=True)
+        code, lines = self.update(host)
+        self.assertEqual(code, 1)
+        self.assertTrue(lines[-1].startswith("Building the new version failed, so the old one keeps running"))
+        self.assertTrue(lines[-1].endswith("."))
+        self.assertEqual(self.read("mingol/code.py"), "old")
+        self.assertEqual(setup.updates.read_revision(self.root)[0], OLD)
+        self.assertFalse(any("up" in c for c in host.docker()))
+        self.assertFalse(any(os.path.exists(t) for t in self.temps))
+
+    def test_offline(self):
+        code, lines = self.update(FakeHost(), release=setup.updates.Failed("GitHub did not answer (OSError)"))
+        self.assertEqual(code, 1)
+        self.assertEqual(lines[-1], "Could not find the newest release (GitHub did not answer (OSError)), "
+                                    "so nothing was updated.")
+
+    def test_docker_does_not_list(self):
+        code, lines = self.update(FakeHost(ps_fails=True))
+        self.assertEqual((code, lines[-1]), (1, "Docker did not list the server's services, so nothing was updated."))
+        self.assertEqual(self.read("mingol/code.py"), "old")
+
+    def test_not_a_server_folder(self):
+        code, lines = self.update(FakeHost(), argv=["--update", "--yes", "--folder", tempfile.mkdtemp()])
+        self.assertEqual(code, 1)
+        self.assertIn("no compose.yml", lines[-1])
+
+    def test_runs_as_a_script_with_stdin_closed(self):
+        # python setup.py from the source, as the deployer runs it; stops before any docker command
+        here = os.path.dirname(os.path.abspath(setup.__file__))
+        empty = tempfile.mkdtemp()
+        r = subprocess.run([sys.executable, os.path.join(here, "setup.py"), "--update", "--yes", "--folder", empty],
+                           stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                           text=True, timeout=60, cwd=here)
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertRegex(r.stdout.strip().splitlines()[-1], r"no compose\.yml\), so there is nothing to update\.$")
+        self.assertEqual(os.listdir(empty), [])
+
+    def test_progress_lines_without_a_terminal(self):
+        out = io.StringIO()
+        now = [0.0]
+        p = proglib.Progress(out, clock=lambda: now[0])
+        p.begin("Building the new server image", "a few minutes")
+        for _ in range(5):
+            now[0] += 61
+            p.tick()
+        p.end()
+        lines = out.getvalue().splitlines()
+        self.assertEqual(lines[0], "Building the new server image (a few minutes)...")
+        self.assertEqual(sum("so far" in line for line in lines), 2)       # at 2 and 4 minutes
+        self.assertEqual(lines[-1], "  Done: Building the new server image (5 minutes)")
+
+    def test_the_folder_has_what_setup_py_needs(self):
+        here = os.path.dirname(os.path.abspath(setup.__file__))
+        for rel in ("setup.py", "hostsetup/openlobby.py", "hostsetup/progress.py", "mingol/updates.py"):
+            self.assertTrue(os.path.exists(os.path.join(here, rel)), rel)
+        self.assertEqual(setup.UPDATER_COMMAND, ["python", "setup.py", "--update", "--yes"])
+
+
+class UpdaterPairing(unittest.TestCase):
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        write(self.root, ".env", "MINGOL_ADMIN_TOKEN=tok\n")
+        setup.use_root(self.root)
+        self.addCleanup(setup.use_root, os.path.dirname(os.path.abspath(setup.__file__)))
+        self.sent = []
+
+    def panel(self, answer):
+        """openlobby's POST to the panel, answered with `answer` and recorded."""
+        def post(url, doc, opener):
+            self.sent.append((url, doc))
+            return 200, answer
+        return mock.patch.object(openlobby, "_post", post)
+
+    def test_pairing_sends_the_updater(self):
+        want = {"folder": self.root, "command": ["python", "setup.py", "--update", "--yes"], "timeout_minutes": 60}
+        self.assertEqual(setup.updater(), want)
+        out = io.StringIO()
+        with mock.patch("builtins.input", lambda prompt="": "ABCD2345"), mock.patch("sys.stdout", out), \
+                self.panel({"ok": True, "pairing": "secret-1", "updater": "requested"}):
+            self.assertTrue(setup.pair_with_panel(setup.read_env(), "http://127.0.0.1:8090"))
+        url, doc = self.sent[0]
+        self.assertEqual((url, doc["updater"]), ("http://127.0.0.1:8090/api/pair", want))
+        self.assertIn("its owner must approve it on Settings > Modules", out.getvalue())
+        self.assertEqual(setup.read_choices()["updater_folder"], self.root)
+        self.assertEqual(setup.read_env()["OPENLOBBY_PAIRING"], "secret-1")
+
+    def test_resent_when_the_folder_changes(self):
+        setup.write_env({"OPENLOBBY_PAIRING": "secret-1"})
+        setup.write_choices({"updater_folder": "/somewhere/else"})
+        dock = FakeDocker(running={"org.openlobby.role=panel": ["openlobby-web-1"]},
+                          labels={("openlobby-web-1", "org.openlobby.panel.url"): "http://127.0.0.1:8090"})
+        with mock.patch.object(setup, "docker_run", dock), self.panel({"ok": True, "updater": "approved"}):
+            setup.resend_updater()
+            setup.resend_updater()                     # already sent: no second request
+        self.assertEqual(len(self.sent), 1)
+        url, doc = self.sent[0]
+        self.assertEqual(url, "http://127.0.0.1:8090/api/pair/update")
+        self.assertEqual((doc["pairing"], doc["token"], doc["updater"]["folder"]), ("secret-1", "tok", self.root))
+        self.assertEqual(setup.read_choices()["updater_folder"], self.root)
 
 
 if __name__ == "__main__":

@@ -29,6 +29,18 @@ logs.
 
 From a clone of this repository, `python setup.py` does the same (Python 3.8 or newer).
 
+## Updating
+
+- From an OpenLobby admin panel: press Update on the game's page. The panel's owner approves
+  the updater once, on Settings > Modules, after setup has paired with the panel.
+- Run Golf Server Setup and choose Update.
+- Or, in the server folder: `python setup.py --update --yes`
+
+An update downloads the newest release, builds it while the old version keeps running, then
+swaps the files and restarts only what was running. `.env`, `state/`, `backups/` and the logs
+are left as they are. The panel shows when a newer release is out; `MINGOL_UPDATE_REPO` in
+`.env` points that check at another GitHub repository, or turns it off when empty.
+
 ## Players
 
 Players need a game install whose network settings and DNS point at this server; setup shows the

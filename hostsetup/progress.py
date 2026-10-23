@@ -15,7 +15,11 @@ def minutes(seconds):
 class Progress:
     """One status line per step: "Starting the server (about a minute): 20 seconds so far",
     redrawn in place, and a closing line when the step ends. Without a terminal (output to a
-    file) only the closing lines are written."""
+    file or a pipe) the step's first and closing lines are written, and a "so far" line every
+    NOTE_EVERY seconds in between: a job runner that reads the output may take a long silence
+    for a hang."""
+
+    NOTE_EVERY = 120
 
     def __init__(self, out=None, clock=time.monotonic):
         self.out = out or sys.stdout
@@ -24,6 +28,7 @@ class Progress:
         self.title = None
         self.detail = ""
         self.started = 0.0
+        self.noted = 0.0
         self.width = 0
 
     def begin(self, title, estimate=""):
@@ -31,6 +36,7 @@ class Progress:
             return
         self.end()
         self.title, self.estimate, self.detail, self.started = title, estimate, "", self.clock()
+        self.noted = self.started
         if not self.live:
             self._write("%s%s...\n" % (title, " (%s)" % estimate if estimate else ""))
         self.tick()
@@ -51,6 +57,9 @@ class Progress:
             text = self.line()
             self._write("\r" + text + " " * max(0, self.width - len(text)))
             self.width = len(text)
+        elif self.title and self.clock() - self.noted >= self.NOTE_EVERY:
+            self.noted = self.clock()
+            self._write(self.line() + "\n")
 
     def end(self, ok=True):
         if not self.title:
@@ -83,6 +92,7 @@ def run_logged(cmd, log, on_line=None, progress=None, cwd=None, env=None):
 
     threading.Thread(target=read, daemon=True).start()
     tail = []
+    ticked = time.monotonic()
     while True:
         try:
             line = lines.get(timeout=1)
@@ -94,6 +104,9 @@ def run_logged(cmd, log, on_line=None, progress=None, cwd=None, env=None):
             break
         log.write(line)
         log.flush()
+        if progress and time.monotonic() - ticked >= 1:      # a busy build still ticks
+            progress.tick()
+            ticked = time.monotonic()
         line = line.rstrip("\r\n")
         tail = (tail + [line])[-30:]
         if on_line:

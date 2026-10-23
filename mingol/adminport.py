@@ -41,6 +41,10 @@ the server holds play data for it (the GAMEDB record is not decoded, so nothing 
 place in the Japan Tour ranking the boards show (live.japan_tour, by in-game ID). OpenLobby
 handles are never matched against in-game IDs: a name in common is a coincidence, not a link.
 
+status.json also carries the update notice (mingol/updates.py): the running build's commit
+against the newest release on GitHub, checked at most every 30 minutes off the request path.
+MINGOL_UPDATE_REPO points it at another repository, or turns it off when set empty.
+
 There is no Announce: the server sends nothing to a player already online that shows text (the
 client's system line, chat type 2 without the leading tab, and the cmd 0x44c ticker are known from
 static RE only and this server has never sent them), so the panel's maintenance warning has no
@@ -54,7 +58,7 @@ import os
 import sys
 import time
 
-from . import live, olpage, olport, tours
+from . import live, olpage, olport, tours, updates
 from .feega import Feega, FeegaError
 
 WAIT = 10.0
@@ -271,10 +275,11 @@ def find_players(play, q, limit):
 
 
 def build(loop, play, gate, www=None, token=None, bind=None, port=None, containers=None, data_dir=None,
-          feega=None):
+          feega=None, update_check=None):
     """The AdminPort for the running servers (run.py's play, gate and www); not started.
     `data_dir` is where login news is kept (None: not kept, as in the tests that need no file).
-    `feega` is the Feega account API client (feega.Feega), None to look nothing up there."""
+    `feega` is the Feega account API client (feega.Feega), None to look nothing up there.
+    `update_check` is the status's update notice (updates.UpdateCheck), None for no notice."""
     containers = containers if containers is not None else [
         c.strip() for c in env("CONTAINERS", "mingol-game-1").split(",") if c.strip()]
     ap = olport.AdminPort(
@@ -291,7 +296,10 @@ def build(loop, play, gate, www=None, token=None, bind=None, port=None, containe
 
     @ap.status
     def status():
-        return _status(_on_loop(loop, lambda: live.snapshot(play, www)))
+        out = _status(_on_loop(loop, lambda: live.snapshot(play, www)))
+        if update_check is not None:
+            out["update"] = update_check.get()
+        return out
 
     ap.calendar(tour_calendar)
 
@@ -356,7 +364,7 @@ def start(play, gate, www=None, log=print, data_dir=None):
     try:
         feega = Feega()
         ap = build(asyncio.get_running_loop(), play, gate, www, data_dir=data_dir,
-                   feega=feega if feega.url else None)
+                   feega=feega if feega.url else None, update_check=updates.from_env())
         host, n = ap.start()
     except (OSError, ValueError) as ex:
         log(f"adminport: not started ({ex})")
